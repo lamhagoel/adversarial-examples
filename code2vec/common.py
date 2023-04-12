@@ -32,6 +32,7 @@ class Config:
         config.SAVE_PATH = args.save_path
         config.LOAD_PATH = args.load_path
         config.RELEASE = args.release
+        config.LOAD_SUBS_PATH = args.load_subs_path
         return config
 
     def __init__(self):
@@ -51,6 +52,7 @@ class Config:
         self.EMBEDDINGS_SIZE = 0
         self.SAVE_PATH = ''
         self.LOAD_PATH = ''
+        self.LOAD_SUBS_PATH = ''
         self.MAX_TO_KEEP = 0
         self.RELEASE = False
 

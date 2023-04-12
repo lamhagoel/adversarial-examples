@@ -28,11 +28,12 @@ def my_py_func(grad_word_embed, path_source_target_tensor, words_to_compute_grad
 
 class Model:
     topk = 10
-    num_batches_to_log = 100
+    num_batches_to_log = 1
 
     def __init__(self, config):
         self.config = config
         self.sess = tf.Session()
+        self.sess2 = tf.Session()
 
         self.eval_data_lines = None
         self.eval_queue = None
@@ -408,6 +409,8 @@ class Model:
                 self.build_test_graph_with_loss(self.eval_queue.get_filtered_batches(), self.eval_queue,
                                                 indextop_to_word, self.words_to_compute_grads, topk_words_from_model)
 
+        
+
         if self.config.LOAD_PATH and not self.config.TRAIN_PATH:
             self.initialize_session_variables(self.sess)
             self.load_model(self.sess)
@@ -416,6 +419,12 @@ class Model:
                 print('Releasing model, output model: %s' % release_name )
                 self.saver.save(self.sess, release_name )
                 return None
+
+        if self.config.LOAD_SUBS_PATH:
+            # self.initialize_session_variables2(self.sess2)
+            print(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='attn_model'))
+            print(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='model'))
+            self.load_subs_model(self.sess2)
 
         if self.eval_data_lines is None:
             print('Loading test data from: ' + self.config.TEST_PATH)
@@ -563,7 +572,7 @@ class Model:
                     del batch_data[:self.config.ADVERSARIAL_MINI_BATCH_SIZE]
                     del batch_word_to_derive[:self.config.ADVERSARIAL_MINI_BATCH_SIZE]
 
-                    loss_of_input, grad_of_input  = self.sess.run(
+                    loss_of_input, grad_of_input  = self.sess2.run(
                         [self.loss_wrt_input,
                          self.grad_wrt_input],
                         feed_dict={self.eval_placeholder: mini_batch_data, self.words_to_compute_grads: mini_batch_word_to_derive})
@@ -787,6 +796,48 @@ class Model:
         return adversary_loss, batched_grad_of_source_input, original_words, original_words_index, \
                train_optimizer, train_loss
 
+    def calculate_weighted_contexts_attn(self, words_vocab, paths_vocab, attention_query, attention_key, attention_val, source_input, path_input,
+                                    target_input, valid_mask, is_evaluating=False, return_embed = False):
+        keep_prob1 = 0.75
+        max_contexts = self.config.MAX_CONTEXTS
+
+        source_word_embed = tf.nn.embedding_lookup(params=words_vocab, ids=source_input)  # (batch, max_contexts, dim)
+        path_embed = tf.nn.embedding_lookup(params=paths_vocab, ids=path_input)  # (batch, max_contexts, dim)
+        target_word_embed = tf.nn.embedding_lookup(params=words_vocab, ids=target_input)  # (batch, max_contexts, dim)
+
+        context_embed = tf.concat([source_word_embed, path_embed, target_word_embed],
+                                  axis=-1)  # (batch, max_contexts, dim * 3)
+        if not is_evaluating:
+            context_embed = tf.nn.dropout(context_embed, keep_prob1)
+
+        flat_embed = tf.reshape(context_embed, [-1, self.config.EMBEDDINGS_SIZE * 3])  # (batch * max_contexts, dim * 3)
+        transform_param = tf.get_variable('TRANSFORM',
+                                          shape=(self.config.EMBEDDINGS_SIZE * 3, self.config.EMBEDDINGS_SIZE * 3),
+                                          dtype=tf.float32)
+
+        flat_embed = tf.tanh(tf.matmul(flat_embed, transform_param))  # (batch * max_contexts, dim * 3)
+
+        query = tf.matmul(flat_embed, attention_query)  # (batch * max_contexts, 1)
+        key = tf.matmul(flat_embed, attention_key)  # (batch * max_contexts, 1)
+        val = tf.matmul(flat_embed, attention_val)  # (batch * max_contexts, 1)
+        attn = tf.nn.softmax(tf.matmul(query, tf.transpose(key)), axis=1) # (batch * max_contexts, batch * max_contexts)
+        contexts_weights = tf.matmul(attn, val)  # (batch * max_contexts, 1)
+
+        batched_contexts_weights = tf.reshape(contexts_weights,
+                                              [-1, max_contexts, 1])  # (batch, max_contexts, 1)
+        mask = tf.log(valid_mask)  # (batch, max_contexts)
+        mask = tf.expand_dims(mask, axis=2)  # (batch, max_contexts, 1)
+        batched_contexts_weights += mask  # (batch, max_contexts, 1)
+        attention_weights = tf.nn.softmax(batched_contexts_weights, dim=1)  # (batch, max_contexts, 1)
+
+        batched_embed = tf.reshape(flat_embed, shape=[-1, max_contexts, self.config.EMBEDDINGS_SIZE * 3])
+        weighted_average_contexts = tf.reduce_sum(tf.multiply(batched_embed, attention_weights),
+                                                  axis=1)  # (batch, dim * 3)
+        if not return_embed:
+            return weighted_average_contexts, attention_weights
+        else:
+            return weighted_average_contexts, attention_weights, source_word_embed, target_word_embed
+
     def calculate_weighted_contexts(self, words_vocab, paths_vocab, attention_param, source_input, path_input,
                                     target_input, valid_mask, is_evaluating=False, return_embed = False):
         keep_prob1 = 0.75
@@ -864,7 +915,7 @@ class Model:
     def build_test_graph_with_loss(self, input_tensors, queue, adversary_words_in_vocab, words_to_compute_grads,
                                    topk_results = None):
         words_to_compute_grads = tf.reshape(words_to_compute_grads, [-1, 1])
-        with tf.variable_scope('model', reuse=True):
+        with tf.variable_scope('attn_model'):
 
             words_vocab = tf.get_variable('WORDS_VOCAB', shape=(self.word_vocab_size + 1, self.config.EMBEDDINGS_SIZE),
                                           dtype=tf.float32, trainable=False)
@@ -872,7 +923,13 @@ class Model:
                                                  shape=(
                                                      self.target_word_vocab_size + 1, self.config.EMBEDDINGS_SIZE * 3),
                                                  dtype=tf.float32, trainable=False)
-            attention_param = tf.get_variable('ATTENTION',
+            attention_query = tf.get_variable('attn_query',
+                                              shape=(self.config.EMBEDDINGS_SIZE * 3, 1),
+                                              dtype=tf.float32, trainable=False)
+            attention_key = tf.get_variable('attn_key',
+                                              shape=(self.config.EMBEDDINGS_SIZE * 3, 1),
+                                              dtype=tf.float32, trainable=False)
+            attention_val = tf.get_variable('attn_val',
                                               shape=(self.config.EMBEDDINGS_SIZE * 3, 1),
                                               dtype=tf.float32, trainable=False)
             paths_vocab = tf.get_variable('PATHS_VOCAB',
@@ -884,8 +941,10 @@ class Model:
             words_input, source_input, path_input, target_input, valid_mask, source_string, path_string, path_target_string = input_tensors  # (batch, 1), (batch, max_contexts)
 
             weighted_average_contexts, attention_weights, source_word_embed, target_word_embed = \
-                self.calculate_weighted_contexts(words_vocab, paths_vocab,
-                        attention_param,
+                self.calculate_weighted_contexts_attn(words_vocab, paths_vocab,
+                        attention_query,
+                        attention_key,
+                        attention_val,
                         source_input, path_input,
                         target_input,
                         valid_mask, True, return_embed=True)
@@ -1083,6 +1142,14 @@ class Model:
             self.path_vocab_size = pickle.load(file)
             print('Done')
 
+    def load_subs_model(self, sess):
+        if sess is not None:
+            print('Loading substitute model weights from: ' + self.config.LOAD_SUBS_PATH)
+            print(tf.train.list_variables(self.config.LOAD_SUBS_PATH))
+            self.saver2 = tf.train.Saver()
+            self.saver2.restore(sess, self.config.LOAD_SUBS_PATH)
+            print('Done')
+
     def save_word2vec_format(self, dest, source):
         with tf.variable_scope('model'):
             if source is VocabType.Token:
@@ -1108,6 +1175,10 @@ class Model:
     @staticmethod
     def initialize_session_variables(sess):
         sess.run(tf.group(tf.global_variables_initializer(), tf.local_variables_initializer(), tf.tables_initializer()))
+
+    @staticmethod
+    def initialize_session_variables2(sess2):
+        sess2.run(tf.group(tf.global_variables_initializer(), tf.local_variables_initializer(), tf.tables_initializer()))
 
     def get_should_reuse_variables(self):
         if self.config.TRAIN_PATH:
