@@ -73,6 +73,9 @@ class AdversarialSearcher():
             self.close_state_to_node[current_state] = self.current_node
             pass
 
+    def get_original_code(self):
+        return self.original_code
+
     def can_be_adversarial(self):
         return self.vars != ""
 

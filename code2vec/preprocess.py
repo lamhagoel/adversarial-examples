@@ -31,6 +31,7 @@ def process_file(file_path, data_file_role, dataset_name, word_to_count, path_to
     empty = 0
     max_unfiltered = 0
     output_path = '{}.{}.c2v'.format(dataset_name, data_file_role)
+    print(file_path)
     with open(output_path, 'w') as outfile:
         with open(file_path, 'r') as file:
             for line in file:

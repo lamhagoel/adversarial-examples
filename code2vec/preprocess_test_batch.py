@@ -49,7 +49,7 @@ def process_file(file_path, data_file_role, dataset_name, word_to_count, path_to
                 sum_total += len(contexts)
 
                 if len(contexts) > max_contexts:
-                    contexts = pick_contexts(contexts, max_contexts, path_to_count, word_to_count)
+                    contexts = pick_contexts(contexts, max_contexts, path_to_count, word_to_count, file_path)
 
                 if len(contexts) == 0:
                     empty += 1
@@ -69,26 +69,28 @@ def process_file(file_path, data_file_role, dataset_name, word_to_count, path_to
     print('Max number of contexts per word: ' + str(max_unfiltered))
     return total
 
-def context_full_found(context_parts, word_to_count, path_to_count):
+def context_full_found(context_parts, word_to_count, path_to_count, file_path):
+    # print(str(context_parts) + " " + file_path)
     return context_parts[0] in word_to_count \
            and context_parts[1] in path_to_count and context_parts[2] in word_to_count
 
 
-def context_partial_found(context_parts, word_to_count, path_to_count):
+def context_partial_found(context_parts, word_to_count, path_to_count, file_path):
+    # print(str(context_parts) + " " + file_path)
     return context_parts[0] in word_to_count \
            or context_parts[1] in path_to_count or context_parts[2] in word_to_count
 
 
-def pick_contexts(contexts, max_contexts, path_to_count, word_to_count,
+def pick_contexts(contexts, max_contexts, path_to_count, word_to_count, file_path,
                   func_context_partial_found = context_partial_found,
                   func_context_full_found=context_full_found):
     context_parts = [c.split(',') for c in contexts]
     full_found_contexts = [c for i, c in enumerate(contexts)
-                           if func_context_full_found(context_parts[i], word_to_count, path_to_count)]
+                           if func_context_full_found(context_parts[i], word_to_count, path_to_count, file_path)]
     partial_found_contexts = [c for i, c in enumerate(contexts)
-                              if func_context_partial_found(context_parts[i], word_to_count, path_to_count)
+                              if func_context_partial_found(context_parts[i], word_to_count, path_to_count, file_path)
                               and not func_context_full_found(context_parts[i], word_to_count,
-                                                         path_to_count)]
+                                                         path_to_count, file_path)]
     if len(full_found_contexts) > max_contexts:
         contexts = sample_contexts(full_found_contexts, max_contexts)
     elif len(full_found_contexts) <= max_contexts \
